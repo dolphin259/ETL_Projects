@@ -1,0 +1,8 @@
+apache-airflow==2.9.2 
+pandas==1.5.3
+google-api-python-client
+Unidecode
+openpyxl
+apache-airflow-providers-mysql
+apache-airflow-providers-postgres
+apache-airflow-providers-celery>=3.3.0

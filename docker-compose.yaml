@@ -1,0 +1,170 @@
+version: '3'
+
+x-airflow-common:
+  &airflow-common
+  build: .
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+  env_file: .env
+  networks: 
+    - data_network 
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks: 
+      - data_network
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8793/health"] 
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        # Đã sửa: đặt mặc định là admin/admin và bỏ "|| true" để thấy lỗi
+        exec /entrypoint airflow db upgrade && airflow users create --username ${_AIRFLOW_WWW_USER_USERNAME:-admin} --password ${_AIRFLOW_WWW_USER_PASSWORD:-admin} --firstname Airflow --lastname Admin --role Admin --email admin@example.com
+
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    volumes:
+      - mysql_h:/var/lib/mysql
+      - ./dataset:/tmp/dataset
+      - ./load_dataset_into_mysql:/tmp/load_dataset
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_DATABASE=olist
+      - MYSQL_ROOT_USER=root
+      - MYSQL_USER=admin
+      - MYSQL_PASSWORD=admin
+      - MYSQL_ROOT_PASSWORD=admin
+    networks:
+      - data_network
+  de_psql:
+    image: postgres:14-alpine
+    container_name: de_psql
+    hostname: de_psql
+    volumes:
+      - postgres_data_h:/var/lib/postgresql/data
+      - ./pg_hba.conf:/tmp/pg_hba.conf
+    command: ["postgres", "-c", "hba_file=/tmp/pg_hba.conf"]
+    expose:
+      - "5433"
+    ports:
+      - "5433:5432" 
+    environment:
+      - POSTGRES_USER=de_user
+      - POSTGRES_PASSWORD=de_password
+      - POSTGRES_DB=de_db
+    networks:
+      - data_network
+  git-sync:
+    image: registry.k8s.io/git-sync/git-sync:v3.6.5
+    platform: linux/arm64
+    volumes:
+      - ./dags:/git/dags
+      - ${GIT_SSH_KEY:-~/.ssh/id_ed25519}:/root/.ssh/id_rsa:ro
+    environment:
+      GIT_SYNC_REPO: ${REPO_URL:-git@github.com:PhanDo25092005/ETL_Projects.git}
+      GIT_SYNC_BRANCH: ${GIT_BRANCH:-main}
+      GIT_SYNC_ROOT: /opt/airflow/dags 
+      GIT_SYNC_WAIT: ${INTERVAL:-10}
+      GIT_SYNC_SSH: "true"
+    user: "root:root"
+    networks:
+      - data_network
+
+networks:
+  data_network:
+    driver: bridge
+    name: data_network
+
+volumes:
+  mysql_h: {}
+  postgres-db-volume: {} 
+  postgres_data_h: {}
