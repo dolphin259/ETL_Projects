@@ -1,5 +1,4 @@
-apache-airflow==2.9.2 
-pandas==1.5.3
+pandas
 google-api-python-client
 Unidecode
 openpyxl

@@ -116,3 +116,6 @@ pyrightconfig.json
 *.vsix
 .history
 .ionide
+.git
+.venv
+dataset

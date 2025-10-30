@@ -1,5 +1,3 @@
-version: '3'
-
 x-airflow-common:
   &airflow-common
   build: .
@@ -150,9 +148,9 @@ services:
       - ./dags:/git/dags
       - ${GIT_SSH_KEY:-~/.ssh/id_ed25519}:/root/.ssh/id_rsa:ro
     environment:
-      GIT_SYNC_REPO: ${REPO_URL:-git@github.com:PhanDo25092005/ETL_Projects.git}
+      GIT_SYNC_REPO: ${REPO_URL:-git@github.com:dolphin259/ETL_Projects.git}
       GIT_SYNC_BRANCH: ${GIT_BRANCH:-main}
-      GIT_SYNC_ROOT: /opt/airflow/dags 
+      GIT_SYNC_ROOT: /opt/dags 
       GIT_SYNC_WAIT: ${INTERVAL:-10}
       GIT_SYNC_SSH: "true"
     user: "root:root"
