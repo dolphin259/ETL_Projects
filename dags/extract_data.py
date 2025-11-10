@@ -1,12 +1,10 @@
-# Thêm các thư viện này ở đầu file
 import boto3
 import zipfile
 import os
 import pandas as pd
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-# Bạn cần hook cho MySQL để nạp vào Staging
 from airflow.providers.mysql.hooks.mysql import MySqlHook 
-
+from sqlalchemy.exc import IntegrityError # Import thêm
 
 # --- ĐỊNH NGHĨA CÁC BIẾN ---
 
@@ -15,30 +13,30 @@ AWS_CONN_ID = "aws_default"
 STAGING_DB_CONN_ID = "staging_db_mysql" # Conn Id trỏ đến MySQL (olist-source-db-v2)
 
 # Thư mục tạm trên máy chủ EC2 (bên trong Docker)
-# Airflow sẽ tải file .zip về đây và giải nén
 TMP_DIR = "/opt/airflow/temp_data"
 TMP_ZIP_FILE_PATH = os.path.join(TMP_DIR, "data.zip")
 EXTRACTED_DIR_PATH = os.path.join(TMP_DIR, "extracted_files")
 
 
-# --- ĐỊNH NGHĨA LẠI TASK EXTRACT ---
+# --- ĐỊNH NGHĨA LẠI TASK EXTRACT (PHIÊN BẢN AN TOÀN) ---
 
 def extract_and_load_to_staging(**kwargs):
     """
-    Task này được Lambda kích hoạt và nhận 'conf'.
-    Nó sẽ tải file .zip, giải nén, và nạp 9 file CSV vào Staging (MySQL).
+    Task này được Lambda kích hoạt.
+    Nó tải file .zip, giải nén, và nạp 9 file CSV vào Staging (MySQL)
+    một cách an toàn bằng kỹ thuật load-and-swap.
     """
     
     # 1. Lấy thông tin file từ 'conf' mà Lambda gửi qua
     dag_run_conf = kwargs.get('dag_run').conf
+    if not dag_run_conf:
+        raise ValueError("DAG này phải được kích hoạt thủ công với JSON hoặc tự động từ S3 (Lambda).")
+        
     s3_bucket = dag_run_conf.get('s3_bucket')
     s3_key = dag_run_conf.get('s3_key') # Tên file, ví dụ: "data.zip"
 
-    # Kiểm tra xem DAG có được kích hoạt tự động không
-    if not s3_key:
-        print("Không tìm thấy s3_key. DAG này có thể đã chạy thủ công.")
-        # Bạn có thể 'return' hoặc ném lỗi ở đây
-        raise ValueError("DAG này phải được kích hoạt từ S3 (Lambda) với s3_key.")
+    if not s3_key or not s3_bucket:
+        raise ValueError("Không tìm thấy 's3_key' hoặc 's3_bucket' trong 'conf'.")
 
     print(f"Bắt đầu xử lý file: {s3_key} từ bucket: {s3_bucket}")
 
@@ -48,7 +46,7 @@ def extract_and_load_to_staging(**kwargs):
     # 3. Dùng S3Hook để tải file .zip từ S3 về
     print(f"Đang tải file {s3_key} từ S3...")
     s3_hook = S3Hook(aws_conn_id=AWS_CONN_ID)
-    s3_client = s3_hook.get_conn() # Lấy client boto3
+    s3_client = s3_hook.get_conn() 
     s3_client.download_file(s3_bucket, s3_key, TMP_ZIP_FILE_PATH)
     
     print(f"Đã tải file về {TMP_ZIP_FILE_PATH}")
@@ -60,54 +58,64 @@ def extract_and_load_to_staging(**kwargs):
         
     print("Đã giải nén thành công.")
 
-    # 5. Nạp 9 file .csv vào Staging (MySQL)
-    print("Bắt đầu nạp dữ liệu vào Staging (MySQL)...")
+    # 5. NẠP VÀ HOÁN ĐỔI (LOAD-AND-SWAP) AN TOÀN
+    print("Bắt đầu nạp dữ liệu (an toàn) vào Staging (MySQL)...")
     
-    # Lấy hook (đường hầm) kết nối tới Staging DB
     mysql_hook = MySqlHook(mysql_conn_id=STAGING_DB_CONN_ID)
+    engine = mysql_hook.get_sqlalchemy_engine() # Để dùng Pandas
     
-    # Danh sách các file CSV ta cần nạp
-    # Tên file phải khớp với tên file trong .zip của bạn
     csv_files = [
-        "olist_customers_dataset.csv",
-        "olist_geolocation_dataset.csv",
-        "olist_order_items_dataset.csv",
-        "olist_order_payments_dataset.csv",
-        "olist_order_reviews_dataset.csv",
-        "olist_orders_dataset.csv",
-        "olist_products_dataset.csv",
-        "olist_sellers_dataset.csv",
+        "olist_customers_dataset.csv", "olist_geolocation_dataset.csv",
+        "olist_order_items_dataset.csv", "olist_order_payments_dataset.csv",
+        "olist_order_reviews_dataset.csv", "olist_orders_dataset.csv",
+        "olist_products_dataset.csv", "olist_sellers_dataset.csv",
         "product_category_name_translation.csv"
     ]
 
     for file_name in csv_files:
+        table_name = file_name.replace(".csv", "").replace("_dataset", "")
+        temp_table_name = f"{table_name}_temp" # Tên bảng tạm
+        
         try:
             file_path = os.path.join(EXTRACTED_DIR_PATH, file_name)
             
-            # Tên bảng trong MySQL (giả sử tên bảng = tên file bỏ .csv)
-            table_name = file_name.replace(".csv", "").replace("_dataset", "")
+            if not os.path.exists(file_path):
+                print(f"Cảnh báo: Không tìm thấy file {file_name} trong file .zip. Bỏ qua.")
+                continue
+
+            print(f"Đang nạp file {file_name} vào bảng TẠM: {temp_table_name}...")
             
-            print(f"Đang nạp file {file_name} vào bảng {table_name}...")
-            
-            # Dùng Pandas để đọc CSV và nạp vào DB
-            # Đây là cách đơn giản nhất
+            # --- BƯỚC 1: NẠP VÀO BẢNG TẠM ---
             df = pd.read_csv(file_path)
-            
-            # Thay thế giá trị NaN (rỗng) bằng None để MySQL hiểu
             df = df.where(pd.notnull(df), None)
             
-            # Dùng hook để lấy 'engine' (công cụ) của SQLAlchemy
-            engine = mysql_hook.get_sqlalchemy_engine()
+            # Nạp vào bảng TẠM, dùng 'replace' ở đây là an toàn
+            df.to_sql(temp_table_name, con=engine, if_exists='replace', index=False)
             
-            # Nạp dataframe vào SQL, thay thế nếu bảng đã tồn tại
-            df.to_sql(table_name, con=engine, if_exists='replace', index=False)
+            print(f"Nạp xong bảng tạm. Bắt đầu hoán đổi (swap)...")
+
+            # --- BƯỚC 2: KIỂM TRA (Tùy chọn, có thể thêm) ---
+            # Ví dụ: Kiểm tra xem bảng tạm có dữ liệu không
+            # ...
+
+            # --- BƯỚC 3: HOÁN ĐỔI (SWAP) BẰNG GIAO DỊCH SQL ---
+            # Dữ liệu cũ (table_name) chỉ bị xóa SAU KHI 
+            # dữ liệu mới (temp_table_name) đã nạp thành công.
+            swap_sql = f"""
+            BEGIN;
+            DROP TABLE IF EXISTS {table_name};
+            ALTER TABLE {temp_table_name} RENAME TO {table_name};
+            COMMIT;
+            """
+            mysql_hook.run(swap_sql) # Chạy lệnh SQL
             
-            print(f"Nạp thành công {table_name}.")
+            print(f"Hoán đổi thành công. Bảng {table_name} đã được cập nhật.")
             
-        except FileNotFoundError:
-            print(f"Cảnh báo: Không tìm thấy file {file_name} trong file .zip.")
         except Exception as e:
-            print(f"Lỗi khi nạp file {file_name}: {e}")
+            # Nếu có lỗi, dọn dẹp bảng tạm và báo lỗi
+            print(f"Lỗi khi xử lý {file_name}: {e}. Đang dọn dẹp bảng tạm...")
+            mysql_hook.run(f"DROP TABLE IF EXISTS {temp_table_name};")
+            # Ném lỗi để Airflow biết task này thất bại
             raise
 
     # 6. Xóa file và thư mục tạm
@@ -116,17 +124,3 @@ def extract_and_load_to_staging(**kwargs):
     # (Bạn có thể thêm code để xóa thư mục 'EXTRACTED_DIR_PATH' nếu muốn)
 
     print("Hoàn tất task extract_and_load_to_staging.")
-
-
-# --- SỬA LẠI DAG CỦA BẠN ---
-# Trong file DAG chính, hãy đảm bảo task của bạn gọi hàm Python này:
-
-# extract_task = PythonOperator(
-#     task_id="extract_and_load_to_staging",
-#     python_callable=extract_and_load_to_staging,
-#     provide_context=True, # Rất quan trọng! Để hàm nhận được **kwargs
-# )
-
-# Các task transform sau đó sẽ phụ thuộc vào task này
-# transform_dim_customers_task.set_upstream(extract_task)
-# ...
