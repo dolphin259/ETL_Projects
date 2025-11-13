@@ -1,39 +1,30 @@
-import boto3
-import zipfile
-import os
-import pandas as pd
+# dags/extract_data.py (PHIÊN BẢN MỚI CHO 1 RDS POSTGRES)
+import boto3, zipfile, os, pandas as pd
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.providers.mysql.hooks.mysql import MySqlHook 
-from sqlalchemy.exc import IntegrityError # Import thêm
+from airflow.providers.postgres.hooks.postgres import PostgresHook # SỬA: CHỈ DÙNG POSTGRES
+from sqlalchemy.exc import IntegrityError
 
-# --- ĐỊNH NGHĨA CÁC BIẾN ---
-
-# Tên các connection bạn đã tạo trong Airflow
 AWS_CONN_ID = "aws_default"
-STAGING_DB_CONN_ID = "staging_db_mysql" # Conn Id trỏ đến MySQL (olist-source-db-v2)
+DB_CONN_ID = "data_warehouse_db" # SỬA: CHỈ DÙNG 1 CONNECTION TỚI RDS
 
-# Thư mục tạm trên máy chủ EC2 (bên trong Docker)
 TMP_DIR = "/opt/airflow/temp_data"
 TMP_ZIP_FILE_PATH = os.path.join(TMP_DIR, "data.zip")
 EXTRACTED_DIR_PATH = os.path.join(TMP_DIR, "extracted_files")
 
-
-# --- ĐỊNH NGHĨA LẠI TASK EXTRACT (PHIÊN BẢN AN TOÀN) ---
-
 def extract_and_load_to_staging(**kwargs):
     """
     Task này được Lambda kích hoạt.
-    Nó tải file .zip, giải nén, và nạp 9 file CSV vào Staging (MySQL)
-    một cách an toàn bằng kỹ thuật load-and-swap.
+    Nó tải file .zip, giải nén, và nạp 9 file CSV vào 
+    SCHEMA 'staging' của database Postgres (RDS).
     """
     
     # 1. Lấy thông tin file từ 'conf' mà Lambda gửi qua
     dag_run_conf = kwargs.get('dag_run').conf
     if not dag_run_conf:
-        raise ValueError("DAG này phải được kích hoạt thủ công với JSON hoặc tự động từ S3 (Lambda).")
+        raise ValueError("DAG phải được trigger từ S3 (Lambda).")
         
     s3_bucket = dag_run_conf.get('s3_bucket')
-    s3_key = dag_run_conf.get('s3_key') # Tên file, ví dụ: "data.zip"
+    s3_key = dag_run_conf.get('s3_key')
 
     if not s3_key or not s3_bucket:
         raise ValueError("Không tìm thấy 's3_key' hoặc 's3_bucket' trong 'conf'.")
@@ -58,64 +49,63 @@ def extract_and_load_to_staging(**kwargs):
         
     print("Đã giải nén thành công.")
 
-    # 5. NẠP VÀ HOÁN ĐỔI (LOAD-AND-SWAP) AN TOÀN
-    print("Bắt đầu nạp dữ liệu (an toàn) vào Staging (MySQL)...")
+    # 5. NẠP VÀ HOÁN ĐỔI (LOAD-AND-SWAP) VÀO POSTGRES
+    print("Bắt đầu nạp dữ liệu (an toàn) vào Schema 'staging' (Postgres)...")
     
-    mysql_hook = MySqlHook(mysql_conn_id=STAGING_DB_CONN_ID)
-    engine = mysql_hook.get_sqlalchemy_engine() # Để dùng Pandas
+    pg_hook = PostgresHook(postgres_conn_id=DB_CONN_ID) # SỬA: Dùng PostgresHook
+    engine = pg_hook.get_sqlalchemy_engine() # SỬA: Dùng engine Postgres
     
-    csv_files = [
-        "olist_customers_dataset.csv", "olist_geolocation_dataset.csv",
-        "olist_order_items_dataset.csv", "olist_order_payments_dataset.csv",
-        "olist_order_reviews_dataset.csv", "olist_orders_dataset.csv",
-        "olist_products_dataset.csv", "olist_sellers_dataset.csv",
-        "product_category_name_translation.csv"
-    ]
+    # Tạo schema STAGING nếu chưa có
+    pg_hook.run("CREATE SCHEMA IF NOT EXISTS staging;")
 
-    for file_name in csv_files:
-        table_name = file_name.replace(".csv", "").replace("_dataset", "")
+    csv_to_table_map = {
+        "olist_customers_dataset.csv": "customers",
+        "olist_geolocation_dataset.csv": "geolocation",
+        "olist_order_items_dataset.csv": "order_items",
+        "olist_order_payments_dataset.csv": "payments",
+        "olist_order_reviews_dataset.csv": "order_reviews",
+        "olist_orders_dataset.csv": "orders",
+        "olist_products_dataset.csv": "products",
+        "olist_sellers_dataset.csv": "sellers",
+        "product_category_name_translation.csv": "product_category_name_translation"
+    }
+
+    for file_name, table_name in csv_to_table_map.items():
+        file_path = os.path.join(EXTRACTED_DIR_PATH, file_name)
         temp_table_name = f"{table_name}_temp" # Tên bảng tạm
         
         try:
-            file_path = os.path.join(EXTRACTED_DIR_PATH, file_name)
-            
             if not os.path.exists(file_path):
                 print(f"Cảnh báo: Không tìm thấy file {file_name} trong file .zip. Bỏ qua.")
                 continue
 
-            print(f"Đang nạp file {file_name} vào bảng TẠM: {temp_table_name}...")
+            print(f"Đang nạp file {file_name} vào bảng TẠM: staging.{temp_table_name}...")
             
             # --- BƯỚC 1: NẠP VÀO BẢNG TẠM ---
             df = pd.read_csv(file_path)
             df = df.where(pd.notnull(df), None)
             
             # Nạp vào bảng TẠM, dùng 'replace' ở đây là an toàn
-            df.to_sql(temp_table_name, con=engine, if_exists='replace', index=False)
+            # SỬA: Thêm schema='staging'
+            df.to_sql(temp_table_name, con=engine, schema='staging', if_exists='replace', index=False)
             
             print(f"Nạp xong bảng tạm. Bắt đầu hoán đổi (swap)...")
 
-            # --- BƯỚC 2: KIỂM TRA (Tùy chọn, có thể thêm) ---
-            # Ví dụ: Kiểm tra xem bảng tạm có dữ liệu không
-            # ...
-
             # --- BƯỚC 3: HOÁN ĐỔI (SWAP) BẰNG GIAO DỊCH SQL ---
-            # Dữ liệu cũ (table_name) chỉ bị xóa SAU KHI 
-            # dữ liệu mới (temp_table_name) đã nạp thành công.
             swap_sql = f"""
             BEGIN;
-            DROP TABLE IF EXISTS {table_name};
-            ALTER TABLE {temp_table_name} RENAME TO {table_name};
+            DROP TABLE IF EXISTS staging.{table_name};
+            ALTER TABLE staging.{temp_table_name} RENAME TO {table_name};
             COMMIT;
             """
-            mysql_hook.run(swap_sql) # Chạy lệnh SQL
+            pg_hook.run(swap_sql) # Chạy lệnh SQL
             
-            print(f"Hoán đổi thành công. Bảng {table_name} đã được cập nhật.")
+            print(f"Hoán đổi thành công. Bảng staging.{table_name} đã được cập nhật.")
             
         except Exception as e:
             # Nếu có lỗi, dọn dẹp bảng tạm và báo lỗi
             print(f"Lỗi khi xử lý {file_name}: {e}. Đang dọn dẹp bảng tạm...")
-            mysql_hook.run(f"DROP TABLE IF EXISTS {temp_table_name};")
-            # Ném lỗi để Airflow biết task này thất bại
+            pg_hook.run(f"DROP TABLE IF EXISTS staging.{temp_table_name};")
             raise
 
     # 6. Xóa file và thư mục tạm
