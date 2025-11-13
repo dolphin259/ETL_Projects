@@ -60,6 +60,13 @@ def transform_fact_orders():
     # 9. Lấy Geolocation Key (Hơi phức tạp, phải lấy zip_code từ customers trước)
     df_cust_zip = db_operator.get_data_to_pd("SELECT customer_id, customer_zip_code_prefix FROM staging.customers")
     df = pd.merge(df, df_cust_zip, on='customer_id', how='left')
+    
+    # ***** PHẦN SỬA LỖI *****
+    # Đảm bảo cả hai cột dùng để join đều là kiểu chuỗi (string) để tránh lỗi ValueError
+    df['customer_zip_code_prefix'] = df['customer_zip_code_prefix'].astype(str)
+    df_dim_geolocation['geolocation_zip_code_prefix'] = df_dim_geolocation['geolocation_zip_code_prefix'].astype(str)
+    # ************************
+
     df = pd.merge(df, df_dim_geolocation, left_on='customer_zip_code_prefix', right_on='geolocation_zip_code_prefix', how='left')
 
     # 10. Chọn các cột cuối cùng cho bảng Fact
