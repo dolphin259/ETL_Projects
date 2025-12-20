@@ -1,20 +1,9 @@
--- CREATE DATABASE olist;
--- USE olist;
-
 CREATE TABLE product_category_name_translation (
     product_category_name varchar(64),
     product_category_name_english varchar(64),
     PRIMARY KEY (product_category_name)
 );
 
--- #CREATE TABLE geolocation (
--- #    geolocation_zip_code_prefix INT NOT NULL,
--- #    geolocation_lat FLOAT NOT NULL,
--- #    geolocation_lng FLOAT NOT NULL,
--- #    geolocation_city VARCHAR(64) NOT NULL,
--- #    geolocation_state VARCHAR(64) NOT NULL, 
--- #    PRIMARY KEY (geolocation_zip_code_prefix)
--- #);
 CREATE TABLE geolocation (
     geolocation_zip_code_prefix INT,
     geolocation_lat FLOAT ,
@@ -99,5 +88,3 @@ CREATE TABLE order_reviews (
     review_answer_timestamp date,
     FOREIGN KEY (order_id) REFERENCES orders(order_id)
 );
-
--- SHOW VARIABLES LIKE 'secure_file_priv'

@@ -1,5 +1,5 @@
 # Build-data-warehouse-with-Airflow-Python-for-E-commerce
-🚀 Just completed an exciting ELT data pipeline project focused on eCommerce data! This end-to-end pipeline extracts sales data, stages it for further analysis, and transforms it into actionable insights in a data warehouse.
+Just completed an exciting ELT data pipeline project focused on eCommerce data! This end-to-end pipeline extracts sales data, stages it for further analysis, and transforms it into actionable insights in a data warehouse.
 
 Key languages and data platforms of the project:
 

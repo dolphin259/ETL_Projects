@@ -2,11 +2,9 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
 
-# Định nghĩa hàm Python sẽ được gọi bởi task
 def print_hello():
     print("Hello, Airflow! DAG đang chạy thành công.")
 
-# Thiết lập thông tin DAG
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -21,15 +19,13 @@ dag = DAG(
     'hello_airflow',
     default_args=default_args,
     description='DAG đơn giản in Hello Airflow',
-    schedule_interval=timedelta(days=1),  # Chạy mỗi ngày một lần
+    schedule_interval=timedelta(days=1),
 )
 
-# Định nghĩa Task
 task_hello = PythonOperator(
     task_id='print_hello',
     python_callable=print_hello,
     dag=dag,
 )
 
-# Thiết lập thứ tự chạy task
 task_hello

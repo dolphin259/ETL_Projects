@@ -16,8 +16,6 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.utils.task_group import TaskGroup
 from datetime import datetime, timedelta
 
-# ... các import khác giữ nguyên ...
-
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -35,7 +33,6 @@ with DAG(
     schedule_interval=timedelta(days=1),
 ) as dag:
 
-    # Task Extract
     with TaskGroup("extract") as extract_group:
         extract_task = PythonOperator(
             task_id='extract_and_load_to_staging',
@@ -43,7 +40,6 @@ with DAG(
             provide_context=True,
         )
 
-    # Task Group Transform
     with TaskGroup("transform") as transform_group:
         task_dim_customers = PythonOperator(
             task_id='transform_dim_customers',
@@ -75,14 +71,12 @@ with DAG(
             python_callable=transform_dim_payments,
         )
 
-    # Task Group Load
     with TaskGroup("load") as load_group:
         task_fact_orders = PythonOperator(
             task_id='transform_fact_orders',
             python_callable=transform_fact_orders,
         )
 
-    # Thiết lập dependencies
     extract_group >> transform_group >> load_group
 
 

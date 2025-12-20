@@ -30,7 +30,6 @@ GROUP BY
 ORDER BY 
     total_sold DESC;
 
--- doanh thu theo khu vuc
 SELECT 
     g.geolocation_city,
     SUM(f.total_amount) AS total_revenue
