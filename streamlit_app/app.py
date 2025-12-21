@@ -267,7 +267,7 @@ if st.session_state["authentication_status"] is True:
                     st.session_state.dag_run_id = None
                     st.rerun()
 
-    st.title("🛍️áo cáo Kinh doanh")
+    st.title("Báo cáo Kinh doanh")
 
     if st.session_state.app_notification and st.session_state.app_notification['type'] == 'success':
         st.markdown(f"""
