@@ -240,7 +240,7 @@ if st.session_state["authentication_status"] is True:
                                 zf.writestr(f"{table_name}.csv", csv_data)
                                 st.text(f"Đã tải bảng: {table_name} ({len(df)} dòng)")
                             else:
-                                st.warning(f"ảng {table_name} không có dữ liệu.")
+                                st.warning(f"Bảng {table_name} không có dữ liệu.")
 
                 if has_data:
                     zip_buffer.seek(0)
