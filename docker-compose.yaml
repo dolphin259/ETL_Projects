@@ -12,6 +12,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
@@ -23,6 +24,31 @@ x-airflow-common:
   user: "${AIRFLOW_UID:-50000}:0"
 
 services:
+  streamlit:
+    image: python:3.9-slim
+    container_name: streamlit_app
+    restart: always
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit_app:/app
+    working_dir: /app
+    environment:
+      DB_CONN: postgresql+psycopg2://de_user:de_password@data-warehouse.ci7sumkiiee6.us-east-1.rds.amazonaws.com:5432/dw
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt &&
+      streamlit run app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.enableCORS=false
+      --server.enableXsrfProtection=false"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   airflow-webserver:
     <<: *airflow-common
     command: webserver
@@ -95,23 +121,3 @@ services:
       - bash
       - -c
       - airflow
-
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
-    command: ["mysqld", "--local-infile=1"]
-    volumes:
-      - mysql_h:/var/lib/mysql
-      - ./dataset:/tmp/dataset
-      - ./load_dataset_into_mysql:/tmp/load_dataset
-    ports:
-      - "3307:3306"
-    environment:
-      - MYSQL_DATABASE=olist
-      - MYSQL_ROOT_USER=root
-      - MYSQL_USER=admin
-      - MYSQL_PASSWORD=admin
-      - MYSQL_ROOT_PASSWORD=admin
-
-volumes:
-  mysql_h: {}
